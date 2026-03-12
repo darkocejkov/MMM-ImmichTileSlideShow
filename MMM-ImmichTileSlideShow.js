@@ -81,6 +81,15 @@ Module.register("MMM-ImmichTileSlideShow", {
     // Development
     debug: false
     ,
+
+    // Dynamic config switching
+    // Map time ranges to immichConfigs indices. Ranges are checked every configSwitchCheckIntervalMs.
+    // Example: [{start: "09:00", end: "17:00", configIndex: 0}, {start: "17:00", end: "09:00", configIndex: 1}]
+    // Overnight ranges (start > end) are supported. First matching range wins.
+    timeRangeConfigs: [],
+    // How often (ms) to check time-based config switching (min 10 s)
+    configSwitchCheckIntervalMs: 60000,
+
     // Featured larger tiles (automatic by default)
     featuredAuto: true,
     featuredTilesMin: 2,
@@ -139,16 +148,23 @@ Module.register("MMM-ImmichTileSlideShow", {
     this._sizeCache = new Map();
     this._sizeCacheTimer = null;
     this._initialFilled = false;
+    this._timeRangeTimer = null;
 
     // Lightweight mode: no client-side behavioral changes beyond Immich asset preference.
 
     this.log("started with config", this.config);
+
+    // Check time-range config before first register so correct index is used from the start
+    this._applyTimeRangeConfig();
 
     // Ask the helper for data; it should respond with IMMICH_TILES_DATA
     this.sendSocketNotification("IMMICH_TILES_REGISTER", {
       identifier: this.identifier,
       config: this.config
     });
+
+    // Start periodic time-range checks (if configured)
+    this._startTimeRangeCheck();
 
     // Create rendering root depending on mode
     if (this.config.useFullscreenBelow !== false) {
@@ -590,11 +606,25 @@ Module.register("MMM-ImmichTileSlideShow", {
   },
 
   /**
+   * Handle notifications from other modules or the system.
+   * Supports IMMICH_NEXT_CONFIG and IMMICH_PREVIOUS_CONFIG to cycle the active Immich config.
+   * @param {string} notification
+   */
+  notificationReceived(notification) {
+    if (notification === 'IMMICH_NEXT_CONFIG') {
+      this._stepConfig(1);
+    } else if (notification === 'IMMICH_PREVIOUS_CONFIG') {
+      this._stepConfig(-1);
+    }
+  },
+
+  /**
    * Stop lifecycle hook to clear timers
    */
   stop() {
     if (this._rotationTimer) clearInterval(this._rotationTimer);
     if (this._featuredTimer) clearInterval(this._featuredTimer);
+    if (this._timeRangeTimer) { clearInterval(this._timeRangeTimer); this._timeRangeTimer = null; }
     if (this._mmObserver) {
       try { this._mmObserver.disconnect(); } catch (e) {}
       this._mmObserver = null;
@@ -1100,5 +1130,84 @@ Module.register("MMM-ImmichTileSlideShow", {
       }
       this._scrollOffset -= rowStep;
     }
+  },
+
+  // --- Dynamic config switching ---
+
+  /**
+   * Reload images from the helper using the current activeImmichConfigIndex.
+   */
+  _reloadImmichData() {
+    this.log('reloading Immich data with configIndex', this.config.activeImmichConfigIndex);
+    this._setDebugText(`switching to config ${this.config.activeImmichConfigIndex}…`);
+    this.sendSocketNotification('IMMICH_TILES_REGISTER', {
+      identifier: this.identifier,
+      config: this.config
+    });
+  },
+
+  /**
+   * Step the active config index by +1 (next) or -1 (previous) and reload.
+   * Wraps around. Does nothing if fewer than 2 configs are defined.
+   * @param {number} delta
+   */
+  _stepConfig(delta) {
+    const total = Array.isArray(this.config.immichConfigs) ? this.config.immichConfigs.length : 0;
+    if (total < 2) {
+      this.log('IMMICH_NEXT/PREV_CONFIG ignored — fewer than 2 immichConfigs defined');
+      return;
+    }
+    const current = Number(this.config.activeImmichConfigIndex) || 0;
+    this.config.activeImmichConfigIndex = ((current + delta) % total + total) % total;
+    this.log('config stepped to index', this.config.activeImmichConfigIndex);
+    this._reloadImmichData();
+  },
+
+  /**
+   * Check timeRangeConfigs and update activeImmichConfigIndex if a matching range is found.
+   * Returns true if the index changed.
+   * @returns {boolean}
+   */
+  _applyTimeRangeConfig() {
+    const ranges = this.config.timeRangeConfigs;
+    if (!Array.isArray(ranges) || ranges.length === 0) return false;
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    for (const r of ranges) {
+      const [sh, sm] = String(r.start || '').split(':').map(Number);
+      const [eh, em] = String(r.end || '').split(':').map(Number);
+      if (!Number.isFinite(sh) || !Number.isFinite(eh)) continue;
+      const startMins = sh * 60 + (Number.isFinite(sm) ? sm : 0);
+      const endMins = eh * 60 + (Number.isFinite(em) ? em : 0);
+      // Support overnight ranges (e.g. 22:00 – 06:00)
+      const active = startMins <= endMins
+        ? nowMins >= startMins && nowMins < endMins
+        : nowMins >= startMins || nowMins < endMins;
+      if (active) {
+        const idx = Number(r.configIndex) || 0;
+        if (idx !== this.config.activeImmichConfigIndex) {
+          this.config.activeImmichConfigIndex = idx;
+          return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  },
+
+  /**
+   * Start a periodic timer that checks whether the active config should change based on timeRangeConfigs.
+   */
+  _startTimeRangeCheck() {
+    if (!Array.isArray(this.config.timeRangeConfigs) || this.config.timeRangeConfigs.length === 0) return;
+    if (this._timeRangeTimer) return;
+    const interval = Math.max(10000, Number(this.config.configSwitchCheckIntervalMs) || 60000);
+    this._timeRangeTimer = setInterval(() => {
+      const changed = this._applyTimeRangeConfig();
+      if (changed) {
+        this.log('time-range triggered config switch to index', this.config.activeImmichConfigIndex);
+        this._reloadImmichData();
+      }
+    }, interval);
   }
 });
