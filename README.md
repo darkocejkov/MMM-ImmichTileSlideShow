@@ -1,3 +1,4 @@
+
 # MMM-ImmichTileSlideShow
 
 A tile-based slideshow for MagicMirror² that displays a configurable grid of images. It is designed to fetch photos and (optionally) videos from [Immich (self-hosted photo app)](http://immch.app/) via the module's `node_helper` and internal proxies, but it also ships with placeholder tiles so it renders out-of-the-box with zero configuration.
@@ -12,6 +13,9 @@ Performance note (Raspberry Pi / Chromium): this module now requests Immich thum
 - Immich integration (memory/album/search/random/anniversary)
 
 <img src="public/screenshot.png" alt="Screenshot" width="640" />
+
+## Changes from the original repo
+- Added support for time-based mapping for immich configs
 
 ## Installation
 
@@ -77,6 +81,13 @@ By default it renders as a fullscreen background in `fullscreen_below` (no posit
     // Captions
     showCaptions: false,
     tileInfo: ["date"], // title | date | album
+
+    // [NEW] Map time ranges to specific immich configs
+    timeRangeConfigs: [
+      { start: "09:00", end: "17:00", configIndex: 0 }, // daytime → album of family
+      { start: "17:00", end: "09:00", configIndex: 1 }, // overnight → screensaver album
+    ],
+    configSwitchCheckIntervalMs: 60000, // check every minute
 
     // Optional: Immich configuration (not required for placeholders)
     immichConfigs: [
@@ -177,6 +188,35 @@ See `examples/config.example.js` for another snippet.
 | `anniversaryEndYear` | number | `2025` | Anniversary: ending year. |
 | `sortImagesBy` | string | `"none"` | Sorting: `name`, `created`, `modified`, `taken`, `random`, or `none`. |
 | `sortImagesDescending` | boolean | `false` | Reverse sort order. |
+
+## Notifications
+
+The module can both **receive** notifications (sent from other modules or automations) and **emit** notifications when it sends data to the helper.
+
+### Inbound notifications (sent **to** this module)
+
+Use `this.sendNotification(key)` from any other MagicMirror module to trigger these.
+
+| Key | Description |
+|-----|-------------|
+| `IMMICH_NEXT_CONFIG` | Switch to the next entry in `immichConfigs` (wraps around). Ignored if fewer than 2 configs are defined. |
+| `IMMICH_PREVIOUS_CONFIG` | Switch to the previous entry in `immichConfigs` (wraps around). Ignored if fewer than 2 configs are defined. |
+
+Example — trigger from another module or a button module:
+
+```js
+this.sendNotification('IMMICH_NEXT_CONFIG');
+this.sendNotification('IMMICH_PREVIOUS_CONFIG');
+```
+
+### Socket notifications (internal — frontend ↔ node_helper)
+
+These are used internally between the browser-side module and its node_helper. You do not normally need to send them manually, but they are documented here for reference.
+
+| Key | Direction | Description |
+|-----|-----------|-------------|
+| `IMMICH_TILES_REGISTER` | Frontend → Helper | Sent on startup (and on every config switch) with the full config object. Triggers the helper to load assets from Immich. |
+| `IMMICH_TILES_DATA` | Helper → Frontend | Sent by the helper with the resolved asset list (`{ images: [...] }`). The frontend uses this to populate tiles. |
 
 ## Static Assets
 
